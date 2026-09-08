@@ -1,22 +1,28 @@
 import streamlit as st
-from supabase import create_client, Client
+import requests
 from datetime import datetime
 import pytz
 
 st.set_page_config(page_title="Nhật Ký Chúng Mình", page_icon="💌", layout="wide")
 
-# --- 1. KẾT NỐI SUPABASE ---
-SUPABASE_URL = "https://vexrprlxrudebjrwpsex.supabase.co/rest/v1/"    # Thay URL của bạn
-SUPABASE_KEY = "sb_secret_VYZAz3JsQMWCaj3L2qtaGw_4FCxsKgv"                     # Thay anon public key của bạn
+# --- 1. CẤU HÌNH API GOOGLE SHEET ---
+API_URL = "https://script.google.com/macros/library/d/1sde1cOlXiGwlJl-W4wTfs3Q26KET5tCsURSLrMxyKZJ6au04SelHsZYp/1"  # <-- Dán link Apps Script vào đây
 vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
-@st.cache_resource
-def get_db() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+def load_data():
+    try:
+        res = requests.get(API_URL, timeout=10)
+        return res.json()
+    except Exception:
+        return {"diaries": [], "views": {}}
 
-supabase = get_db()
+def post_data(payload):
+    try:
+        requests.post(API_URL, json=payload, timeout=10)
+    except Exception:
+        pass
 
-# --- 2. TỰ NHẬN DIỆN QUA MẬT KHẨU ---
+# --- 2. TỰ NHẬN DIỆN MẬT KHẨU ---
 PASSWORDS = {
     "pass_cua_a_123": "User A",
     "pass_cua_b_456": "User B"
@@ -28,44 +34,45 @@ if "logged_in_user" not in st.session_state:
 # Màn hình đăng nhập
 if not st.session_state.logged_in_user:
     st.title("🔒 Cánh Cửa Nhật Ký")
-    st.caption("Nhập mật khẩu bí mật của bạn:")
+    st.caption("Nhập mật khẩu bí mật:")
     pwd = st.text_input("Mật khẩu:", type="password")
     
     if st.button("Mở cửa", use_container_width=True):
         if pwd in PASSWORDS:
-            identified_user = PASSWORDS[pwd]
-            st.session_state.logged_in_user = identified_user
+            user = PASSWORDS[pwd]
+            st.session_state.logged_in_user = user
             
-            # Cập nhật thời gian vào xem
+            # Ghi nhận thời gian xem qua Google Apps Script
             now_vn = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
-            supabase.table("views_log").upsert({
-                "user_name": identified_user,
-                "last_viewed": now_vn
-            }).execute()
-            
+            post_data({
+                "action": "update_view",
+                "user": user,
+                "time": now_vn
+            })
             st.rerun()
         else:
-            st.error("Mật khẩu không đúng!")
+            st.error("Mật khẩu không chính xác!")
     st.stop()
 
 # --- 3. GIAO DIỆN CHÍNH ---
 current_user = st.session_state.logged_in_user
 partner = "User B" if current_user == "User A" else "User A"
 
-h_left, h_right = st.columns([4, 1])
-with h_left:
+db_data = load_data()
+views_dict = db_data.get("views", {})
+
+h_col1, h_col2 = st.columns([4, 1])
+with h_col1:
     st.title(f"📖 Góc nhỏ của {current_user}")
-with h_right:
+with h_col2:
     if st.button("Đăng xuất"):
         st.session_state.logged_in_user = None
         st.rerun()
 
-# Lấy thời gian đối phương xem lần cuối
-res_view = supabase.table("views_log").select("last_viewed").eq("user_name", partner).execute()
-last_view = res_view.data[0]["last_viewed"] if res_view.data else "Chưa có dữ liệu"
-st.info(f"👀 **{partner}** đã vào đọc lần cuối lúc: **{last_view}**")
+last_seen = views_dict.get(partner, "Chưa vào lần nào")
+st.info(f"👀 **{partner}** đã vào đọc lần cuối lúc: **{last_seen}**")
 
-# --- 4. FORM VIẾT BÀI HÀNG NGÀY ---
+# --- 4. FORM VIẾT NHẬT KÝ ---
 with st.expander("✍️ Viết trang nhật ký hôm nay", expanded=True):
     with st.form("diary_form", clear_on_submit=True):
         col1, col2 = st.columns([2, 1])
@@ -80,14 +87,16 @@ with st.expander("✍️ Viết trang nhật ký hôm nay", expanded=True):
         if st.form_submit_button("Lưu trang nhật ký", use_container_width=True):
             if entry_content.strip():
                 now_str = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
-                supabase.table("diaries").insert({
+                post_data({
+                    "action": "add_diary",
                     "date": str(entry_date),
                     "author": current_user,
                     "mood": mood,
                     "title": entry_title,
-                    "content": entry_content
-                }).execute()
-                st.success("Đã lưu trang nhật ký thành công!")
+                    "content": entry_content,
+                    "created_at": now_str
+                })
+                st.success("Đã lưu vào Google Sheet!")
                 st.rerun()
             else:
                 st.warning("Nội dung không được để trống!")
@@ -98,17 +107,21 @@ st.divider()
 st.subheader("📚 Nhật ký của chúng mình")
 col_a, col_b = st.columns(2)
 
+diaries = db_data.get("diaries", [])
+
 def render_column(user_name, target_col):
     with target_col:
         st.markdown(f"### 💌 Nhật ký của {user_name}")
-        records = supabase.table("diaries").select("*").eq("author", user_name).order("id", desc=True).execute().data
-        if records:
-            for row in records:
+        user_entries = [d for d in diaries if d.get("author") == user_name]
+        if user_entries:
+            # Bài mới nhất hiển thị trên cùng
+            for item in reversed(user_entries):
                 with st.chat_message("user" if user_name == "User A" else "assistant"):
-                    st.markdown(f"**🗓️ Ngày: {row['date']}** — {row['mood']}")
-                    if row.get('title'):
-                        st.markdown(f"**📌 {row['title']}**")
-                    st.write(row['content'])
+                    st.markdown(f"**🗓️ Ngày: {item.get('date')}** — {item.get('mood')}")
+                    if item.get("title"):
+                        st.markdown(f"**📌 {item.get('title')}**")
+                    st.write(item.get("content"))
+                    st.caption(f"Đã lưu lúc: {item.get('created_at')}")
         else:
             st.caption("Chưa có bài viết nào.")
 
