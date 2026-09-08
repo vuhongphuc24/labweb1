@@ -1,29 +1,22 @@
 import streamlit as st
-import gspread
+from supabase import create_client, Client
 from datetime import datetime
 import pytz
-import pandas as pd
 
 st.set_page_config(page_title="Nhật Ký Chúng Mình", page_icon="💌", layout="wide")
 
-# --- 1. CẤU HÌNH LIÊN KẾT GOOGLE SHEET ---
-SHEET_URL = "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID_HERE/edit"  # <-- Dán link Google Sheet của bạn vào đây
+# --- 1. KẾT NỐI SUPABASE ---
+SUPABASE_URL = "https://vexrprlxrudebjrwpsex.supabase.co/rest/v1/"    # Thay URL của bạn
+SUPABASE_KEY = "sb_secret_VYZAz3JsQMWCaj3L2qtaGw_4FCxsKgv"                     # Thay anon public key của bạn
 vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
-try:
-    sh = gspread.open_by_url(SHEET_URL)
-    sheet_diaries = sh.worksheet("diaries")
-    sheet_views = sh.worksheet("views_log")
-except Exception:
-    # Hỗ trợ trường hợp kết nối qua Streamlit Secrets (nếu có cấu hình service account)
-    if "gcp_service_account" in st.secrets:
-        gc = gspread.service_account_from_dict(st.secrets["gcp_service_account"])
-        sh = gc.open_by_url(SHEET_URL)
-        sheet_diaries = sh.worksheet("diaries")
-        sheet_views = sh.worksheet("views_log")
+@st.cache_resource
+def get_db() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 2. TỰ ĐỘNG NHẬN DIỆN DANH TÍNH QUA MẬT KHẨU ---
-# Đổi mật khẩu mong muốn ở đây (Mật khẩu: Tên người dùng tương ứng)
+supabase = get_db()
+
+# --- 2. TỰ NHẬN DIỆN QUA MẬT KHẨU ---
 PASSWORDS = {
     "pass_cua_a_123": "User A",
     "pass_cua_b_456": "User B"
@@ -32,11 +25,10 @@ PASSWORDS = {
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
 
-# --- 3. MÀN HÌNH ĐĂNG NHẬP (KHÔNG HỎI TÊN, CHỈ NHẬP PASS) ---
+# Màn hình đăng nhập
 if not st.session_state.logged_in_user:
     st.title("🔒 Cánh Cửa Nhật Ký")
-    st.caption("Nhập mật khẩu bí mật của bạn để vào góc riêng:")
-    
+    st.caption("Nhập mật khẩu bí mật của bạn:")
     pwd = st.text_input("Mật khẩu:", type="password")
     
     if st.button("Mở cửa", use_container_width=True):
@@ -44,96 +36,79 @@ if not st.session_state.logged_in_user:
             identified_user = PASSWORDS[pwd]
             st.session_state.logged_in_user = identified_user
             
-            # Tự động ghi nhận thời gian vừa mở xem
+            # Cập nhật thời gian vào xem
             now_vn = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
-            try:
-                cell = sheet_views.find(identified_user)
-                sheet_views.update_cell(cell.row, 2, now_vn)
-            except Exception:
-                pass
+            supabase.table("views_log").upsert({
+                "user_name": identified_user,
+                "last_viewed": now_vn
+            }).execute()
+            
             st.rerun()
         else:
-            st.error("Mật khẩu không đúng rồi bạn ơi!")
+            st.error("Mật khẩu không đúng!")
     st.stop()
 
-# --- 4. GIAO DIỆN CHÍNH KHI ĐÃ ĐĂNG NHẬP ---
+# --- 3. GIAO DIỆN CHÍNH ---
 current_user = st.session_state.logged_in_user
 partner = "User B" if current_user == "User A" else "User A"
 
-header_col1, header_col2 = st.columns([4, 1])
-with header_col1:
+h_left, h_right = st.columns([4, 1])
+with h_left:
     st.title(f"📖 Góc nhỏ của {current_user}")
-with header_col2:
+with h_right:
     if st.button("Đăng xuất"):
         st.session_state.logged_in_user = None
         st.rerun()
 
-# Lấy thời gian đối phương xem lần cuối từ tab views_log
-try:
-    cell_partner = sheet_views.find(partner)
-    last_view = sheet_views.cell(cell_partner.row, 2).value or "Chưa vào lần nào"
-except Exception:
-    last_view = "Chưa có dữ liệu"
-
+# Lấy thời gian đối phương xem lần cuối
+res_view = supabase.table("views_log").select("last_viewed").eq("user_name", partner).execute()
+last_view = res_view.data[0]["last_viewed"] if res_view.data else "Chưa có dữ liệu"
 st.info(f"👀 **{partner}** đã vào đọc lần cuối lúc: **{last_view}**")
 
-# --- 5. FORM VIẾT NHẬT KÝ HÀNG NGÀY ---
+# --- 4. FORM VIẾT BÀI HÀNG NGÀY ---
 with st.expander("✍️ Viết trang nhật ký hôm nay", expanded=True):
     with st.form("diary_form", clear_on_submit=True):
-        f_col1, f_col2 = st.columns([2, 1])
-        with f_col1:
+        col1, col2 = st.columns([2, 1])
+        with col1:
             entry_date = st.date_input("Ngày:", datetime.now(vn_tz).date())
-        with f_col2:
+        with col2:
             mood = st.selectbox("Tâm trạng:", ["🥰 Hạnh phúc", "😊 Bình yên", "🥺 Nhớ bạn", "😴 Mệt mỏi", "😤 Dỗi"])
             
         entry_title = st.text_input("Tiêu đề hôm nay:")
-        entry_content = st.text_area("Kể chi tiết ngày hôm nay nhé:", height=130)
+        entry_content = st.text_area("Hôm nay của bạn thế nào?", height=120)
         
-        btn_save = st.form_submit_button("Lưu trang nhật ký", use_container_width=True)
-        if btn_save:
+        if st.form_submit_button("Lưu trang nhật ký", use_container_width=True):
             if entry_content.strip():
-                now_stamp = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
-                sheet_diaries.append_row([
-                    str(entry_date),
-                    current_user,
-                    mood,
-                    entry_title,
-                    entry_content,
-                    now_stamp
-                ])
+                now_str = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
+                supabase.table("diaries").insert({
+                    "date": str(entry_date),
+                    "author": current_user,
+                    "mood": mood,
+                    "title": entry_title,
+                    "content": entry_content
+                }).execute()
                 st.success("Đã lưu trang nhật ký thành công!")
                 st.rerun()
             else:
-                st.warning("Nội dung nhật ký không được để trống!")
+                st.warning("Nội dung không được để trống!")
 
 st.divider()
 
-# --- 6. HIỂN THỊ 2 CỘT NHẬT KÝ SONG SONG ---
+# --- 5. HIỂN THỊ 2 CỘT NHẬT KÝ ---
 st.subheader("📚 Nhật ký của chúng mình")
 col_a, col_b = st.columns(2)
 
-try:
-    records = sheet_diaries.get_all_records()
-    df = pd.DataFrame(records)
-except Exception:
-    df = pd.DataFrame()
-
-def render_column(user_name, placeholder):
-    with placeholder:
+def render_column(user_name, target_col):
+    with target_col:
         st.markdown(f"### 💌 Nhật ký của {user_name}")
-        if not df.empty and 'author' in df.columns:
-            user_entries = df[df['author'] == user_name]
-            if not user_entries.empty:
-                # Sắp xếp bài viết mới nhất lên trên
-                for _, row in user_entries.iloc[::-1].iterrows():
-                    with st.chat_message("user" if user_name == "User A" else "assistant"):
-                        st.markdown(f"**🗓️ Ngày: {row.get('date', '')}** — {row.get('mood', '')}")
-                        if row.get('title'):
-                            st.markdown(f"**📌 {row.get('title')}**")
-                        st.write(row.get('content', ''))
-                        st.caption(f"Đã ghi lúc: {row.get('created_at', '')}")
-            else:
-                st.caption("Chưa có bài viết nào.")
+        records = supabase.table("diaries").select("*").eq("author", user_name).order("id", desc=True).execute().data
+        if records:
+            for row in records:
+                with st.chat_message("user" if user_name == "User A" else "assistant"):
+                    st.markdown(f"**🗓️ Ngày: {row['date']}** — {row['mood']}")
+                    if row.get('title'):
+                        st.markdown(f"**📌 {row['title']}**")
+                    st.write(row['content'])
         else:
             st.caption("Chưa có bài viết nào.")
 
