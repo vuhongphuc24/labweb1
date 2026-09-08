@@ -1,28 +1,38 @@
 import streamlit as st
 import requests
+import json
 from datetime import datetime
 import pytz
 
 st.set_page_config(page_title="Nhật Ký Chúng Mình", page_icon="💌", layout="wide")
 
-# --- 1. CẤU HÌNH API GOOGLE SHEET ---
-API_URL = "https://script.google.com/macros/library/d/1sde1cOlXiGwlJl-W4wTfs3Q26KET5tCsURSLrMxyKZJ6au04SelHsZYp/1"  # <-- Dán link Apps Script vào đây
+# --- 1. CẤU HÌNH API LINK ---
+API_URL = "https://script.google.com/macros/library/d/1sde1cOlXiGwlJl-W4wTfs3Q26KET5tCsURSLrMxyKZJ6au04SelHsZYp/2"  # <-- Dán link Web App của bạn vào đây
 vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
+@st.cache_data(ttl=10)
 def load_data():
     try:
-        res = requests.get(API_URL, timeout=10)
+        res = requests.get(API_URL, timeout=15)
         return res.json()
     except Exception:
         return {"diaries": [], "views": {}}
 
 def post_data(payload):
     try:
-        requests.post(API_URL, json=payload, timeout=10)
-    except Exception:
-        pass
+        res = requests.post(
+            API_URL,
+            data=json.dumps(payload),
+            headers={"Content-Type": "application/json"},
+            allow_redirects=True,
+            timeout=15
+        )
+        return res.status_code == 200
+    except Exception as e:
+        st.error(f"Lỗi gửi dữ liệu: {e}")
+        return False
 
-# --- 2. TỰ NHẬN DIỆN MẬT KHẨU ---
+# --- 2. PHÂN QUYỀN MẬT KHẨU TỰ ĐỘNG ---
 PASSWORDS = {
     "pass_cua_a_123": "User A",
     "pass_cua_b_456": "User B"
@@ -34,7 +44,7 @@ if "logged_in_user" not in st.session_state:
 # Màn hình đăng nhập
 if not st.session_state.logged_in_user:
     st.title("🔒 Cánh Cửa Nhật Ký")
-    st.caption("Nhập mật khẩu bí mật:")
+    st.caption("Nhập mật khẩu bí mật của bạn:")
     pwd = st.text_input("Mật khẩu:", type="password")
     
     if st.button("Mở cửa", use_container_width=True):
@@ -42,37 +52,38 @@ if not st.session_state.logged_in_user:
             user = PASSWORDS[pwd]
             st.session_state.logged_in_user = user
             
-            # Ghi nhận thời gian xem qua Google Apps Script
+            # Ghi nhận mốc thời gian vào xem
             now_vn = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
             post_data({
                 "action": "update_view",
                 "user": user,
                 "time": now_vn
             })
+            st.cache_data.clear()
             st.rerun()
         else:
-            st.error("Mật khẩu không chính xác!")
+            st.error("Mật khẩu không đúng!")
     st.stop()
 
 # --- 3. GIAO DIỆN CHÍNH ---
 current_user = st.session_state.logged_in_user
 partner = "User B" if current_user == "User A" else "User A"
 
-db_data = load_data()
-views_dict = db_data.get("views", {})
-
-h_col1, h_col2 = st.columns([4, 1])
-with h_col1:
+h_left, h_right = st.columns([4, 1])
+with h_left:
     st.title(f"📖 Góc nhỏ của {current_user}")
-with h_col2:
+with h_right:
     if st.button("Đăng xuất"):
         st.session_state.logged_in_user = None
         st.rerun()
 
-last_seen = views_dict.get(partner, "Chưa vào lần nào")
-st.info(f"👀 **{partner}** đã vào đọc lần cuối lúc: **{last_seen}**")
+db_data = load_data()
+views_dict = db_data.get("views", {})
+last_view = views_dict.get(partner, "Chưa vào lần nào")
 
-# --- 4. FORM VIẾT NHẬT KÝ ---
+st.info(f"👀 **{partner}** đã vào đọc lần cuối lúc: **{last_view}**")
+
+# --- 4. FORM VIẾT NHẬT KÝ HÀNG NGÀY ---
 with st.expander("✍️ Viết trang nhật ký hôm nay", expanded=True):
     with st.form("diary_form", clear_on_submit=True):
         col1, col2 = st.columns([2, 1])
@@ -87,7 +98,7 @@ with st.expander("✍️ Viết trang nhật ký hôm nay", expanded=True):
         if st.form_submit_button("Lưu trang nhật ký", use_container_width=True):
             if entry_content.strip():
                 now_str = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
-                post_data({
+                ok = post_data({
                     "action": "add_diary",
                     "date": str(entry_date),
                     "author": current_user,
@@ -96,8 +107,12 @@ with st.expander("✍️ Viết trang nhật ký hôm nay", expanded=True):
                     "content": entry_content,
                     "created_at": now_str
                 })
-                st.success("Đã lưu vào Google Sheet!")
-                st.rerun()
+                if ok:
+                    st.cache_data.clear()  # Xóa cache để kéo bài mới tức thì
+                    st.success("Đã lưu thành công vào sổ!")
+                    st.rerun()
+                else:
+                    st.error("Có lỗi khi lưu vào Google Sheet!")
             else:
                 st.warning("Nội dung không được để trống!")
 
@@ -114,14 +129,13 @@ def render_column(user_name, target_col):
         st.markdown(f"### 💌 Nhật ký của {user_name}")
         user_entries = [d for d in diaries if d.get("author") == user_name]
         if user_entries:
-            # Bài mới nhất hiển thị trên cùng
-            for item in reversed(user_entries):
+            for row in reversed(user_entries):
                 with st.chat_message("user" if user_name == "User A" else "assistant"):
-                    st.markdown(f"**🗓️ Ngày: {item.get('date')}** — {item.get('mood')}")
-                    if item.get("title"):
-                        st.markdown(f"**📌 {item.get('title')}**")
-                    st.write(item.get("content"))
-                    st.caption(f"Đã lưu lúc: {item.get('created_at')}")
+                    st.markdown(f"**🗓️ Ngày: {row.get('date')}** — {row.get('mood')}")
+                    if row.get('title'):
+                        st.markdown(f"**📌 {row.get('title')}**")
+                    st.write(row.get('content'))
+                    st.caption(f"Đã lưu lúc: {row.get('created_at')}")
         else:
             st.caption("Chưa có bài viết nào.")
 
