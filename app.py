@@ -9,7 +9,7 @@ st.set_page_config(page_title="Nhật Ký Chúng Mình", page_icon="💌", layou
 
 # --- 1. CẤU HÌNH LIÊN KẾT GOOGLE SHEET ---
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1f_0zYHTG-k3Gac_1ZZJ0ZAsl-mqKChCYYbnn4I772No/edit?usp=drive_link"  # <-- Dán link Sheet vào đây
-vn_tz = pytz.timezone('Asia/Ha_Noi')
+vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
 @st.cache_resource
 def get_spreadsheet():
