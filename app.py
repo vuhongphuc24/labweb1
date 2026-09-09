@@ -10,7 +10,7 @@ import pytz
 st.set_page_config(page_title="Nhật Ký Chúng Mình", page_icon="💌", layout="wide")
 
 # --- 1. CẤU HÌNH API LINK ---
-API_URL = "https://script.google.com/macros/s/AKfycbxHhYwbsX0rztBik_Er6hVgy-VbUsh_qUSl1QS4c2gRaYDJvDEhIwgmLkTgTNenK2n2/exec"  # <-- Dán link Apps Script vào đây
+API_URL = "https://script.google.com/macros/s/AKfycbxHhYwbsX0rztBik_Er6hVgy-VbUsh_qUSl1QS4c2gRaYDJvDEhIwgmLkTgTNenK2n2/exec"  # <-- Giữ nguyên link Apps Script của bạn
 vn_tz = pytz.timezone('Asia/Ho_Chi_Minh')
 
 @st.cache_data(ttl=3)
@@ -57,6 +57,28 @@ def process_image(uploaded_file):
     img.save(buf, format="JPEG", quality=70)
     return f"data:image/jpeg;base64,{base64.b64encode(buf.getvalue()).decode()}"
 
+# Hàm làm sạch định dạng ngày hiển thị (chuẩn Việt Nam DD/MM/YYYY)
+def format_display_date(date_raw):
+    if not date_raw:
+        return ""
+    date_str = str(date_raw).strip()
+    # Nếu bị dính format GMT dài từ Google Sheet
+    if "GMT" in date_str:
+        try:
+            # Tách lấy phần ngày tháng năm
+            dt = datetime.strptime(date_str[:15], "%a %b %d %Y")
+            return dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    # Nếu là dạng YYYY-MM-DD
+    if len(date_str) == 10 and date_str[4] == '-' and date_str[7] == '-':
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+            return dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+    return date_str
+
 # --- 2. ĐĂNG NHẬP ---
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
@@ -101,69 +123,93 @@ last_peek = my_data.get("last_peek", "Chưa xem lần nào")
 st.info(f"👀 **{partner}** đã vào đọc nhật ký của bạn lần cuối lúc: **{last_peek}**")
 
 # Form viết bài trực tiếp
-with st.expander(f"✍️ Viết nhật ký hôm nay ({current_user})", expanded=True):
-    with st.form("diary_form", clear_on_submit=True):
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            entry_date = st.date_input("Ngày:", datetime.now(vn_tz).date())
-        with c2:
-            mood = st.selectbox("Tâm trạng:", ["🥰 Hạnh phúc", "😊 Bình yên", "🥺 Nhớ bạn", "😴 Mệt mỏi", "😤 Dỗi"])
+with st.expander(f"✍️ Viết trang nhật ký hôm nay ({current_user})", expanded=True):
+    col_d, col_m = st.columns([1, 1])
+    with col_d:
+        entry_date = st.date_input("Ngày:", datetime.now(vn_tz).date(), format="DD/MM/YYYY")
+    with col_m:
+        mood_options = [
+            "🥰 Hạnh phúc", 
+            "😊 Vui", 
+            "🥺 Buồn", 
+            "❤️ Yêu", 
+            "🙅‍♂️ Không cho dỗi", 
+            "🙅‍♀️ Không cho ghét", 
+            "✏️ Tự nhập..."
+        ]
+        selected_mood = st.selectbox("Tâm trạng hôm nay:", mood_options)
+    
+    final_mood = selected_mood
+    if selected_mood == "✏️ Tự nhập...":
+        custom_mood = st.text_input("Gõ tâm trạng của bạn vào đây:")
+        if custom_mood.strip():
+            final_mood = f"✨ {custom_mood.strip()}"
             
-        entry_title = st.text_input("Tiêu đề:")
-        entry_content = st.text_area("Hôm nay của bạn có gì đặc biệt không?", height=120)
-        uploaded_img = st.file_uploader("📸 Ảnh kỷ niệm hôm nay:", type=["png", "jpg", "jpeg"])
-        
-        if st.form_submit_button("Lưu trang nhật ký", use_container_width=True):
-            if entry_content.strip() or uploaded_img:
-                with st.spinner("Đang lưu bài viết..."):
-                    img_str = process_image(uploaded_img)
-                    now_str = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
-                    ok = post_entry({
-                        "action": "add_diary",
-                        "author": current_user,
-                        "date": str(entry_date),
-                        "mood": mood,
-                        "title": entry_title,
-                        "content": entry_content,
-                        "image_data": img_str,
-                        "created_at": now_str
-                    })
-                    if ok:
-                        st.cache_data.clear()
-                        st.success("Đã ghi thành công vào file Sheet của bạn!")
-                        st.rerun()
-                    else:
-                        st.error("Có lỗi khi ghi vào Google Sheet!")
-            else:
-                st.warning("Vui lòng nhập nội dung hoặc chọn ảnh!")
+    entry_title = st.text_input("Tiêu đề hôm nay:", placeholder="Ví dụ: Một buổi tối thật dịu dàng...")
+    entry_content = st.text_area("Hôm nay của bạn có gì đặc biệt không?", height=120)
+    uploaded_img = st.file_uploader("📸 Ảnh kỷ niệm hôm nay:", type=["png", "jpg", "jpeg"])
+    
+    if st.button("Lưu trang nhật ký", use_container_width=True):
+        if entry_content.strip() or uploaded_img:
+            with st.spinner("Đang lưu bài viết vào Google Sheet..."):
+                img_str = process_image(uploaded_img)
+                # Lưu ngày chuẩn định dạng Việt Nam DD/MM/YYYY
+                formatted_date_save = entry_date.strftime("%d/%m/%Y")
+                now_str = datetime.now(vn_tz).strftime("%H:%M:%S, %d/%m/%Y")
+                
+                title_to_save = entry_title.strip() if entry_title.strip() else "Không có tiêu đề"
+                
+                ok = post_entry({
+                    "action": "add_diary",
+                    "author": current_user,
+                    "date": formatted_date_save,
+                    "mood": final_mood,
+                    "title": title_to_save,
+                    "content": entry_content,
+                    "image_data": img_str,
+                    "created_at": now_str
+                })
+                if ok:
+                    st.cache_data.clear()
+                    st.success("Đã ghi thành công vào file Sheet của bạn!")
+                    st.rerun()
+                else:
+                    st.error("Có lỗi khi ghi vào Google Sheet!")
+        else:
+            st.warning("Vui lòng nhập nội dung hoặc chọn ảnh!")
 
 st.divider()
 
 # --- 4. BỐ CỤC 2 CỘT HIỂN THỊ ---
 col_my, col_other = st.columns(2)
 
+# Hàm hiển thị danh sách dạng hộp bấm sổ ra (expander)
 def render_list(entries, is_mine):
     if not entries:
         st.caption("Chưa có bài viết nào.")
         return
     for item in reversed(entries):
-        with st.chat_message("user" if is_mine else "assistant"):
-            st.markdown(f"**🗓️ Ngày: {item.get('date')}** — {item.get('mood')}")
-            if item.get('title'):
-                st.markdown(f"**📌 {item.get('title')}**")
+        disp_date = format_display_date(item.get('date'))
+        mood = item.get('mood', '')
+        title = item.get('title', 'Không có tiêu đề')
+        
+        # Tiêu đề thanh bấm: Hiện Ngày - Tâm trạng - Tiêu đề
+        expander_title = f"🗓️ {disp_date} | {mood} | 📌 {title}"
+        
+        with st.expander(expander_title, expanded=False):
             if item.get('content'):
                 st.write(item.get('content'))
             im = item.get('image_data', '')
             if im and im.startswith("data:image"):
                 st.image(im, use_container_width=True)
-            st.caption(f"Đã lưu lúc: {item.get('created_at')}")
+            st.caption(f"🕒 Đã lưu lúc: {item.get('created_at')}")
 
-# Cột của mình (luôn hiển thị bài trong file của mình)
+# Cột của mình
 with col_my:
     st.markdown(f"### 🌸 Nhật ký của tôi ({current_user})")
     render_list(my_data.get("diaries", []), is_mine=True)
 
-# Cột của đối phương (bắt buộc nhập mật khẩu peek + ghi nhận log)
+# Cột của đối phương
 with col_other:
     st.markdown(f"### 🔐 Nhật ký của {partner}")
     if not st.session_state.unlock_partner:
